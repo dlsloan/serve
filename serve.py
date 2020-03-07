@@ -14,7 +14,6 @@ import stat
 import subprocess as sp
 import threading
 import traceback
-import xattr
 
 from cgi import parse_header, parse_multipart
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -182,9 +181,6 @@ class RequestHandler(BaseHTTPRequestHandler):
 			ftype = parts[-1]
 		else:
 			ftype = '.' + parts[-1]
-		xattrs = xattr.listxattr(path)
-		if 'user.mime' in xattrs:
-			mime = xattr.getxattr(path, 'user.mime').decode()
 		if ftype in cfg['file_types']:
 			mime = cfg['file_types'][ftype]
 		else:
