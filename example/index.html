@@ -1,0 +1,25 @@
+<html>
+    <head>
+        <script src="https://code.jquery.com/jquery-3.4.1.min.js" integrity="sha256-CSXorXvZcTkaix6Yvo6HppcZGetbYMGWSFlBw8HfCJo=" crossorigin="anonymous"></script>
+    </head>
+    <body>
+        Test
+        <div id='test'></div>
+        <script>
+            $(document).ready(function() {
+                document.cookie = "test=\"hello you\"";
+                jQuery.post('test.py?name=d', {test1: '123', test2: 'line1\nline2'}).done(function(data) {
+                    $('#test').text(data);
+                }).fail(function(data) {
+                    var parts = data.responseText.split('\n');
+                    $('#test').empty()
+                    for (var i in parts) {
+                        html = $('<div>').text(parts[i]).html()
+                        html = html.replace(/ /g, '&nbsp;')
+                        $("#test").append($('<div>').html(html));
+                    }
+                });
+            });
+        </script>
+    </body>
+</html>

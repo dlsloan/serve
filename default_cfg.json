@@ -1,0 +1,41 @@
+{
+    "file_types": {
+        ".css" : "text/css"  ,
+        ".json": "text/json" ,
+        ".html": "text/html" ,
+        ".htm" : "text/html" ,
+        ".xml" : "text/xml"  ,
+        ".c"   : "text/plain",
+        ".cpp" : "text/plain",
+        ".c++" : "text/plain",
+        ".h"   : "text/plain",
+        ".hpp" : "text/plain",
+        ".h++" : "text/plain",
+        ".sh"  : "text/plain",
+        ".py"  : "text/plain",
+
+        ".js" : "application/javascript",
+        ".eps": "application/postscript",
+
+        ".aac" : "audio/aac"  ,
+        ".ac3" : "audio/ac3"  ,
+        ".aif" : "audio/aiff" ,
+        ".aiff": "audio/aiff" ,
+        ".mp3" : "audio/mpeg3",
+        ".wav" : "audio/wav"  ,
+
+        ".bmp" : "image/bmp" ,
+        ".png" : "image/png" ,
+        ".jpeg": "image/jpeg",
+        ".jpg" : "image/jpeg",
+
+        ".avi": "video/avi",
+        ".mp4": "video/mp4",
+        ".ogg": "video/ogg",
+
+        ".*": "application/x-binary"
+    },
+    "index": [
+        "index.html"
+    ]
+}
