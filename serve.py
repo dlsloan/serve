@@ -2,7 +2,8 @@
 
 #todo serve from multiple folders, double extension squashing (separate mime type from execution is index.html.py -> index.html generated from python)
 #     allow get requests on extension squashed files
-#stderr CACHED:No
+#     -change all executables to be extension sqhashed?
+#     -add basic credential manager
 
 import argparse
 import codecs
@@ -12,6 +13,7 @@ import os
 import ssl
 import stat
 import subprocess as sp
+import time
 import threading
 import traceback
 
@@ -22,251 +24,328 @@ from pathlib import Path
 from socketserver import ThreadingMixIn
 from urllib.parse import parse_qs, urlparse
 
-def escape(val):
-	return codecs.getencoder('unicode_escape')(val)[0]
+class LRUDict(dict):
+    def __init__(self, *pargs, timeout=40, maxcount=1000, **kwargs):
+        self.timeout = timeout
+        self.maxcount = maxcount
+        self.mtx = threading.RLock()
+        super().__init__(*pargs, **kwargs)
+
+    def __enter__(self):
+        return self.mtx.__enter__()
+
+    def __exit__(self, *pargs, **kwargs):
+        return self.mtx.__exit__(*pargs, **kwargs)
+
+    def __setitem__(self, key, val):
+        with self.mtx:
+            if key in self:
+                del self[key]
+            super().__setitem__(key, (time.time() + self.timeout, val))
+            while len(self) > self.maxcount:
+                del self[self.oldest()]
+            while len(self) > 0 and time.time() > super().__getitem__(self.oldest())[0]:
+                del self[self.oldest()]
+
+    def __getitem__(self, key):
+        with self.mtx:
+            val = super().__getitem__(key)[1]
+            del self[key]
+            super().__setitem__(key, (time.time() + self.timeout, val))
+
+    def oldest(self):
+        with self.mtx:
+            for k in self:
+                return k
 
 scr_dir = Path(__file__).parent
+path_cache = LRUDict(timeout=60)
 
-cfg = {}
-
-with open(scr_dir / 'default_cfg.json', 'r') as f:
-	cfg = json.load(f)
+class WWWData:
+    def __init__(self, path, base=''):
+        self.path = Path(path)
+        self.path.resolve(strict=True)
+        self.base = Path(base)
 
 if __name__ == '__main__':
-	parser = argparse.ArgumentParser("Simple python server")
-	parser.add_argument('--cwd', default=None)
-	parser.add_argument('--debug', '-g', action='store_true')
-	parser.add_argument('--buf_size', type=int, default=1024*1024)
-	args = parser.parse_args()
-	if args.cwd is not None:
-		os.chdir(args.cwd)
+    parser = argparse.ArgumentParser("Simple python server")
+    parser.add_argument('--debug', '-g', action='store_true')
+    parser.add_argument('--buf_size', type=int, default=1024*1024)
+    parser.add_argument('--cert', default=None)
+    parser.add_argument('--cfg', default=str(scr_dir / 'default_cfg.json'))
+    parser.add_argument('--http_port', type=int, default=80)
+    parser.add_argument('--https_port', type=int, default=443)
+    parser.add_argument('--no_redirect', action='store_true')
+    parser.add_argument('--gen_cert', default=None)
+    parser.add_argument('www', nargs='*')
+    args = parser.parse_args()
+    www = []
+    for w in args.www:
+        www += [WWWData(*w.split(':'))]
+    args.www = www
+    del www
+    if args.cert is not None:
+        args.cert = Path(args.cert)
+
+with open(args.cfg, 'r') as f:
+    cfg = json.load(f)
 
 cwd = Path(os.getcwd())
 cwd.resolve(strict=True)
 
-if (cwd / 'cfg.json').is_file():
-	with open(cwd / 'cfg.json', 'r') as f:
-		cfg_usr = json.load(f)
-	for k in cfg_usr:
-		if k in cfg and isinstance(cfg[k], collections.Mapping):
-			cfg[k].update(cfg_usr[k])
-		else:
-			cfg[k] = cfg_usr[k]
-	del cfg_usr
+def escape(val):
+    return codecs.getencoder('unicode_escape')(val)[0]
 
 class RedirectHandler(BaseHTTPRequestHandler):
-	def __init__(self, *pargs, **kwargs):
-		super().__init__(*pargs, **kwargs)
+    def __init__(self, *pargs, **kwargs):
+        super().__init__(*pargs, **kwargs)
 
-	def do_HEAD(self):
-		self.do_redirect(301)
+    def do_HEAD(self):
+        self.do_redirect(301)
 
-	def do_GET(self):
-		self.do_HEAD()
+    def do_GET(self):
+        self.do_HEAD()
 
-	def do_POST(self):
-		self.do_redirect(303)
+    def do_POST(self):
+        self.do_redirect(303)
 
-	def do_redirect(self, code):
-		host = self.headers['Host']
-		host = host.split(':')[-2] + ":56443"
-		while self.path.startswith('/'):
-			self.path = self.path[1:]
-		self.send_response(code)
-		if not self.path.startswith('/') and self.path != '':
-			self.path = '/' + self.path
-		self.send_header('location', 'https://' + host + self.path)
-		self.end_headers()
+    def do_redirect(self, code):
+        host = self.headers['Host']
+        if ':' in host:
+            host = f"{host.split(':')[-2]}:{args.https_port}"
+        else:
+            host = f"{host}:{args.https_port}"
+        while self.path.startswith('/'):
+            self.path = self.path[1:]
+        self.send_response(code)
+        if not self.path.startswith('/') and self.path != '':
+            self.path = '/' + self.path
+        self.send_header('location', f"https://{host}{self.path}")
+        self.end_headers()
 
 def path_in_parent(path, parent):
-	try:
-		return not str(path.relative_to(parent)).startswith('..')
-	except ValueError:
-		return False
+    try:
+        return not str(path.relative_to(parent)).startswith('..')
+    except ValueError:
+        return False
 
 class RequestHandler(BaseHTTPRequestHandler):
-	def __init__(self, *pargs, **kwargs):
-		super().__init__(*pargs, **kwargs)
+    def __init__(self, *pargs, **kwargs):
+        super().__init__(*pargs, **kwargs)
 
-	def run_resp(self, code=200, data=None, mime=None, cookies=None, headers=None):
-		if isinstance(data, Path):
-			try:
-				f = data.open('rb')
-			except:
-				if args.debug:
-					self.run_resp(500, traceback.format_exc(), 'text/plain')
-				else:
-					self.run_resp(500)
-		self.send_response(code)
+    def run_resp(self, code=200, data=None, mime=None, cookies=None, headers=None):
+        if isinstance(data, Path):
+            try:
+                f = data.open('rb')
+            except:
+                if args.debug:
+                    self.run_resp(500, traceback.format_exc(), 'text/plain')
+                else:
+                    self.run_resp(500)
+        self.send_response(code)
 
-		if mime is not None:
-			self.send_header('Content-Type', mime)
+        if mime is not None:
+            self.send_header('Content-Type', mime)
 
-		if cookies is not None:
-			for c in cookies:
-				self.send_header('Set-Cookie', c)
+        if cookies is not None:
+            for c in cookies:
+                self.send_header('Set-Cookie', c)
 
-		if headers is not None:
-			for h in headers:
-				self.send_header(*h)
-
-
-		if isinstance(data, Path):
-			self.send_header('Content-Length', os.path.getsize(data))
-		elif data is not None:
-			if isinstance(data, str):
-				data = data.encode()
-			self.send_header('Content-Length', len(data))
-		self.end_headers()
-
-		if isinstance(data, Path):
-			try:
-				data = f.read(args.buf_size)
-				while data is not None and len(data) > 0:
-					self.wfile.write(data)
-					data = f.read(args.buf_size)
-			finally:
-				f.close()
-		elif data is not None:
-			self.wfile.write(data)
+        if headers is not None:
+            for h in headers:
+                self.send_header(*h)
 
 
-	def run_head(self, exec=False):
-		o = urlparse(self.path)
-		self.url_get = parse_qs(o.query)
-		path = o.path
-		if path.startswith('/'):
-			path = path[1:]
-		path = cwd / path
-		path.resolve(strict=False)
-		for p in path.parents:
-			if p.name.startswith('.'):
-				self.run_resp(404)
-				return None, None
-		if not path_in_parent(path, cwd):
-			self.run_resp(403)
-			return None, None
-		elif not path.exists() or path.name.startswith('.'):
-			self.run_resp(404)
-			return None, None
-		elif path.is_dir():
-			if 'index' in cfg:
-				index = cfg['index']
-			else:
-				index = []
-			found = False
-			for i in index:
-				fpath = path / i
-				if not fpath.is_file():
-					continue
-				elif exec and not os.access(fpath, os.X_OK):
-					continue
-				elif not exec and os.access(fpath, os.X_OK):
-					continue
-				path = fpath
-				found = True
-				break
-			if not found:
-				self.run_resp(404)
-				return None, None
-		elif path.is_file():
-			if exec and not os.access(path, os.X_OK):
-				self.run_resp(404)
-				return None, None
-			elif not exec and os.access(path, os.X_OK):
-				self.run_resp(404)
-				return None, None
-		parts = str(path.name).split('.')
-		if len(parts) == 1:
-			ftype = parts[-1]
-		else:
-			ftype = '.' + parts[-1]
-		if ftype in cfg['file_types']:
-			mime = cfg['file_types'][ftype]
-		else:
-			mime = cfg['file_types']['*']
-		return path, mime
+        if isinstance(data, Path):
+            self.send_header('Content-Length', os.path.getsize(data))
+        elif data is not None:
+            if isinstance(data, str):
+                data = data.encode()
+            self.send_header('Content-Length', len(data))
+        self.end_headers()
 
-	def do_HEAD(self):
-		self.run_head(False)
+        if isinstance(data, Path):
+            try:
+                data = f.read(args.buf_size)
+                while data is not None and len(data) > 0:
+                    self.wfile.write(data)
+                    data = f.read(args.buf_size)
+            finally:
+                f.close()
+        elif data is not None:
+            self.wfile.write(data)
 
-	def do_GET(self):
-		path, mime = self.run_head(False)
-		if path is None:
-			return
-		self.run_resp(200, path, mime)
+    def path_check(self, base: Path, file: Path, url: Path):
+        file.resolve(strict=True)
+        base.resolve(strict=True)
+        if not path_in_parent(file, base):
+            return None, None
+        if file.is_dir() and 'index' in cfg:
+            for f in file.iterdir():
+                for i in cfg['index']:
+                    fret, ext = self.path_check(base, f, url/i)
+                    if fret is not None:
+                        return fret, ext
+            return None, None
+        if file.name != url.name and not os.access(file, os.X_OK):
+            return None, None
+        elif file.name != url.name and not file.name.startswith(url.name + '.'):
+            return None, None
+        url_ext = url.name.split('.')
+        if len(url_ext) > 1:
+            return file, '.' + '.'.join(url_ext[1:])
+        else:
+            return file, url_ext[0]
 
-	def parse_POST(self):
-		ctype, pdict = parse_header(self.headers['content-type'])
-		if ctype == 'multipart/form-data':
-			postvars = parse_multipart(self.rfile, pdict)
-		elif ctype == 'application/x-www-form-urlencoded':
-			length = int(self.headers['content-length'])
-			postvars = parse_qs(
-					self.rfile.read(length), 
-					keep_blank_values=1)
-		else:
-			postvars = {}
-		return postvars
+    def path_lookup(self, path):
+        path = Path(path)
+        with path_cache:
+            if path in path_cache:
+                fret, ext = path_cache[path]
+                if not fret.is_file():
+                    del path_cache[path]
+                else:
+                    return fret, ext
+        for site in args.www:
+            if len(path.parts) < len(site.base.parts) or path.parts[:len(site.base.parts)] != site.base.parts:
+                continue
+            lpath = path.relative_to(site.base)
+            dpath = (site.path / lpath)
+            if dpath == site.path:
+                fret, ext = self.path_check(site.path, dpath, lpath)
+                path_cache[path] = (fret, ext)
+                return fret, ext
+            else:
+                dpath = dpath.parent
+            for file in dpath.iterdir():
+                fret, ext = self.path_check(site.path, file, lpath)
+                if fret is not None:
+                    path_cache[path] = (fret, ext)
+                    return fret, ext
+        return None, None
 
-	def do_POST(self):
-		path, mime = self.run_head(True)
-		if path is None:
-			return
-		exec_input = b''
-		cookies = SimpleCookie(self.headers.get('Cookie'))
-		for k in cookies:
-			name = escape(k)
-			val = escape(cookies[k].value)
-			exec_input += b'COOKIE:"' + name + b'"="' + val + b'"\n'
-		post_vars = self.parse_POST()
-		for k in post_vars:
-			name = escape(k.decode())
-			for i in post_vars[k]:
-				val = escape(i.decode())
-				exec_input += b'POST:"' + name + b'"="' + val + b'"\n'
-		for k in self.url_get:
-			name = escape(k)
-			for i in self.url_get[k]:
-				val = escape(i)
-				exec_input += b'GET:"' + name + b'"="' + val + b'"\n'
-		try:
-			val = sp.run([path], input=exec_input, check=True, stdout=sp.PIPE, stderr=sp.PIPE, timeout=10)
-			cookies = []
-			headers = []
-			for line in val.stderr.decode().split('\n'):
-				line = line.strip()
-				if line.startswith('COOKIE:'):
-					c = line[line.index(':')+1:].strip()
-					for k in c:
-						cookies += [c]
-				elif line.startswith("Cache-Control:"):
-					parts = line.split(':')
-					headers += [[parts[0].strip(), parts[1].strip()]]
-			self.run_resp(200, val.stdout, mime, cookies=cookies, headers=headers)
-		except sp.CalledProcessError as err:
-			if args.debug:
-				self.run_resp(500, b'execution error:\n' + err.stderr, 'text/plain')
-			else:
-				self.run_resp(500)
-		except:
-			if args.debug:
-				self.run_resp(500, 'server error:\n' + traceback.format_exc(), 'text/plain')
-			else:
-				self.run_resp(500)
+    def run_head(self):
+        o = urlparse(self.path)
+        self.url_get = parse_qs(o.query)
+        path = o.path
+        if path.startswith('/'):
+            path = path[1:]
+        path, ftype = self.path_lookup(path)
+        if path is None:
+            self.run_resp(404)
+            return None, None
+        while '.' in ftype[1:]:
+            print(ftype)
+            if ftype in cfg['file_types']:
+                break
+            ftype = ftype[ftype[1:].index('.')+1:]
+        if ftype in cfg['file_types']:
+            mime = cfg['file_types'][ftype]
+        else:
+            mime = cfg['file_types']['*']
+        return path, mime
+
+    def parse_POST(self):
+        ctype, pdict = parse_header(self.headers['content-type'])
+        if ctype == 'multipart/form-data':
+            postvars = parse_multipart(self.rfile, pdict)
+        elif ctype == 'application/x-www-form-urlencoded':
+            length = int(self.headers['content-length'])
+            postvars = parse_qs(
+                    self.rfile.read(length), 
+                    keep_blank_values=1)
+        else:
+            postvars = {}
+        return postvars
+
+    def do_exec(self, path, mime, post_vars=None):
+        exec_input = b''
+        if post_vars is None:
+            post_vars = {}
+        cookies = SimpleCookie(self.headers.get('Cookie'))
+        for k in cookies:
+            name = escape(k)
+            val = escape(cookies[k].value)
+            exec_input += b'COOKIE:"' + name + b'"="' + val + b'"\n'
+        for k in post_vars:
+            name = escape(k.decode())
+            for i in post_vars[k]:
+                val = escape(i.decode())
+                exec_input += b'POST:"' + name + b'"="' + val + b'"\n'
+        for k in self.url_get:
+            name = escape(k)
+            for i in self.url_get[k]:
+                val = escape(i)
+                exec_input += b'GET:"' + name + b'"="' + val + b'"\n'
+        try:
+            val = sp.run([path], input=exec_input, check=True, stdout=sp.PIPE, stderr=sp.PIPE, timeout=10)
+            cookies = []
+            headers = []
+            for line in val.stderr.decode().split('\n'):
+                line = line.strip()
+                if line.startswith('COOKIE:'):
+                    c = line[line.index(':')+1:].strip()
+                    for k in c:
+                        cookies += [c]
+                elif line.startswith("Cache-Control:"):
+                    parts = line.split(':')
+                    headers += [[parts[0].strip(), parts[1].strip()]]
+            self.run_resp(200, val.stdout, mime, cookies=cookies, headers=headers)
+        except sp.CalledProcessError as err:
+            if args.debug:
+                self.run_resp(500, b'execution error:\n' + err.stderr, 'text/plain')
+            else:
+                self.run_resp(500)
+        except:
+            if args.debug:
+                self.run_resp(500, 'server error:\n' + traceback.format_exc(), 'text/plain')
+            else:
+                self.run_resp(500)
+
+    def do_HEAD(self):
+        self.run_head()
+
+    def do_GET(self):
+        path, mime = self.run_head()
+        if path is None:
+            return
+        if os.access(path, os.X_OK):
+            self.do_exec(path, mime)
+        else:
+            self.run_resp(200, path, mime)
+
+    def do_POST(self):
+        path, mime = self.run_head()
+        if path is None:
+            return
+        if os.access(path, os.X_OK):
+            self.do_exec(path, mime, self.parse_POST())
+        else:
+            self.run_resp(200, path, mime)
+		
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     """Handle requests in a separate thread."""
 
 if __name__ == '__main__':
-	if (cwd / '.auth').is_dir():
-		print('starting https')
-		httpd = ThreadedHTTPServer(('', 56080), RedirectHandler)
-		th_redir = threading.Thread(target=httpd.serve_forever)
-		th_redir.start()
-		httpsd = ThreadedHTTPServer(('', 56443), RequestHandler)
-		httpsd.socket = ssl.wrap_socket(httpsd.socket, certfile=cwd/'.auth'/'serve.pem', server_side=True)
-	else:
-		print('starting http')
-		httpd = ThreadedHTTPServer(('', 56080), RequestHandler)
-		httpd.serve_forever()
+    if args.gen_cert is not None:
+        cert_folder = Path(args.gen_cert)
+        if not cert_folder.exists():
+            os.mkdir(cert_folder)
+        sp.check_call(['openssl', 'req', '-x509', '-nodes', '-days', '365', '-newkey', 'rsa:2048', '-keyout',
+                       str(cert_folder/'key.pem'), '-out', str(cert_folder/'cert.pem')])
+        exit(0)
+    if args.cert is not None:
+        print('starting https')
+        if not args.no_redirect:
+            httpd = ThreadedHTTPServer(('', args.http_port), RedirectHandler)
+            th_redir = threading.Thread(target=httpd.serve_forever)
+            th_redir.start()
+        httpsd = ThreadedHTTPServer(('', args.https_port), RequestHandler)
+        httpsd.socket = ssl.wrap_socket(httpsd.socket, certfile=args.cert/'cert.pem', keyfile=args.cert/'key.pem',
+                                        server_side=True)
+        httpsd.serve_forever()
+    else:
+        print('starting http')
+        httpd = ThreadedHTTPServer(('', args.http_port), RequestHandler)
+        httpd.serve_forever()
