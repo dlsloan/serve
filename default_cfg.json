@@ -24,10 +24,11 @@
         ".mp3" : "audio/mpeg3",
         ".wav" : "audio/wav"  ,
 
-        ".bmp" : "image/bmp" ,
-        ".png" : "image/png" ,
-        ".jpeg": "image/jpeg",
-        ".jpg" : "image/jpeg",
+        ".bmp" : "image/bmp"   ,
+        ".png" : "image/png"   ,
+        ".jpeg": "image/jpeg"  ,
+        ".jpg" : "image/jpeg"  ,
+        ".ico" : "image/x-icon",
 
         ".avi": "video/avi",
         ".mp4": "video/mp4",
