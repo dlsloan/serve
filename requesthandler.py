@@ -49,7 +49,6 @@ class _RequestHandler(BaseHTTPRequestHandler):
             for h in headers:
                 self.send_header(*h)
 
-
         if isinstance(data, Path):
             self.send_header('Content-Length', os.path.getsize(data))
         elif data is not None:

@@ -1,7 +1,6 @@
 #!/usr/bin/python3
 
-#todo serve from multiple folders
-#     -change all executables to be extension sqhashed?
+# todo
 #     -add basic credential manager
 
 import argparse
