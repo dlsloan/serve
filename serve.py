@@ -12,51 +12,16 @@ import os
 import ssl
 import stat
 import subprocess as sp
-import time
 import threading
 import traceback
 
 from cgi import parse_header, parse_multipart
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from http.cookies import SimpleCookie
+from lrudict import LRUDict
 from pathlib import Path
 from socketserver import ThreadingMixIn
 from urllib.parse import parse_qs, urlparse
-
-class LRUDict(dict):
-    def __init__(self, *pargs, timeout=40, maxcount=1000, **kwargs):
-        self.timeout = timeout
-        self.maxcount = maxcount
-        self.mtx = threading.RLock()
-        super().__init__(*pargs, **kwargs)
-
-    def __enter__(self):
-        return self.mtx.__enter__()
-
-    def __exit__(self, *pargs, **kwargs):
-        return self.mtx.__exit__(*pargs, **kwargs)
-
-    def __setitem__(self, key, val):
-        with self.mtx:
-            if key in self:
-                del self[key]
-            super().__setitem__(key, (time.time() + self.timeout, val))
-            while len(self) > self.maxcount:
-                del self[self.oldest()]
-            while len(self) > 0 and time.time() > super().__getitem__(self.oldest())[0]:
-                del self[self.oldest()]
-
-    def __getitem__(self, key):
-        with self.mtx:
-            val = super().__getitem__(key)[1]
-            del self[key]
-            super().__setitem__(key, (time.time() + self.timeout, val))
-            return val
-
-    def oldest(self):
-        with self.mtx:
-            for k in self:
-                return k
 
 src_dir = Path(__file__).parent
 path_cache = LRUDict(timeout=60)
@@ -266,7 +231,6 @@ class RequestHandler(BaseHTTPRequestHandler):
                 continue
             env['COOKIE_' + k] = cookies[k].value
         cmd_args = {}
-        print(self.url_get, post_vars)
         if post_vars is None:
             for k in self.url_get:
                 if not k.isidentifier():
@@ -279,7 +243,6 @@ class RequestHandler(BaseHTTPRequestHandler):
                     continue
                 n = '--' + k.decode().replace('_', '-')
                 cmd_args[n] = [val.decode() for val in post_vars[k] if val != b'']
-        print(cmd_args)
         try:
             cmd = [src_dir / 'run.sh', path]
             for k in cmd_args:
