@@ -51,6 +51,7 @@ class LRUDict(dict):
             val = super().__getitem__(key)[1]
             del self[key]
             super().__setitem__(key, (time.time() + self.timeout, val))
+            return val
 
     def oldest(self):
         with self.mtx:
@@ -200,7 +201,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         path = Path(path)
         with path_cache:
             if path in path_cache:
-                fret, ext = path_cache[path]
+                (fret, ext) = path_cache[path]
                 if not fret.is_file():
                     del path_cache[path]
                 else:
