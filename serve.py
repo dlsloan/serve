@@ -259,8 +259,6 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     def do_exec(self, path, mime, post_vars=None):
         exec_input = b''
-        if post_vars is None:
-            post_vars = {}
         cookies = SimpleCookie(self.headers.get('Cookie'))
         env = {}
         for k in cookies:
@@ -268,18 +266,20 @@ class RequestHandler(BaseHTTPRequestHandler):
                 continue
             env['COOKIE_' + k] = cookies[k].value
         cmd_args = {}
+        print(self.url_get, post_vars)
         if post_vars is None:
             for k in self.url_get:
-                if not k.decode().isidentifier():
+                if not k.isidentifier():
                     continue
-                k = k.decode().replace('_', '-')
-                cmd_args[k] = [val.decode() for val in self.url_get[k] if val != b'']
+                n = '--' + k.replace('_', '-')
+                cmd_args[n] = [val for val in self.url_get[k] if val != b'']
         else:
             for k in post_vars:
                 if not k.decode().isidentifier():
                     continue
                 n = '--' + k.decode().replace('_', '-')
                 cmd_args[n] = [val.decode() for val in post_vars[k] if val != b'']
+        print(cmd_args)
         try:
             cmd = [src_dir / 'run.sh', path]
             for k in cmd_args:
