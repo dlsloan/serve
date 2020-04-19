@@ -20,6 +20,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from http.cookies import SimpleCookie
 from lrudict import LRUDict
 from pathlib import Path
+from httpsredirecthandler import HTTPSRedirectHandler
 from socketserver import ThreadingMixIn
 from urllib.parse import parse_qs, urlparse
 
@@ -60,33 +61,6 @@ cwd.resolve(strict=True)
 
 def escape(val):
     return codecs.getencoder('unicode_escape')(val)[0]
-
-class RedirectHandler(BaseHTTPRequestHandler):
-    def __init__(self, *pargs, **kwargs):
-        super().__init__(*pargs, **kwargs)
-
-    def do_HEAD(self):
-        self.do_redirect(301)
-
-    def do_GET(self):
-        self.do_HEAD()
-
-    def do_POST(self):
-        self.do_redirect(303)
-
-    def do_redirect(self, code):
-        host = self.headers['Host']
-        if ':' in host:
-            host = f"{host.split(':')[-2]}:{args.https_port}"
-        else:
-            host = f"{host}:{args.https_port}"
-        while self.path.startswith('/'):
-            self.path = self.path[1:]
-        self.send_response(code)
-        if not self.path.startswith('/') and self.path != '':
-            self.path = '/' + self.path
-        self.send_header('location', f"https://{host}{self.path}")
-        self.end_headers()
 
 def path_in_parent(path, parent):
     try:
@@ -314,7 +288,7 @@ if __name__ == '__main__':
         th_redir = None
         httpd = None
         if not args.no_redirect:
-            httpd = ThreadedHTTPServer(('', args.http_port), RedirectHandler)
+            httpd = ThreadedHTTPServer(('', args.http_port), HTTPSRedirectHandler(args.https_port))
             th_redir = threading.Thread(target=httpd.serve_forever)
             th_redir.start()
         httpsd = ThreadedHTTPServer(('', args.https_port), RequestHandler)
