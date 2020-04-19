@@ -25,11 +25,21 @@ class LRUDict(dict):
                 del self[self.oldest()]
 
     def __getitem__(self, key):
+        try:
+            with self.mtx:
+                val = super().__getitem__(key)[1]
+                del self[key]
+                super().__setitem__(key, (time.time() + self.timeout, val))
+                return val
+        except:
+            return None
+        
+    def remove(self, key):
         with self.mtx:
-            val = super().__getitem__(key)[1]
-            del self[key]
-            super().__setitem__(key, (time.time() + self.timeout, val))
-            return val
+            try:
+                del self[key]
+            except:
+                pass
 
     def oldest(self):
         with self.mtx:

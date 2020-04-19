@@ -13,14 +13,9 @@ from pathlib import Path
 from httpsredirecthandler import HTTPSRedirectHandler
 from socketserver import ThreadingMixIn
 from requesthandler import RequestHandler
+from webcfg import WebCFG, WebDir
 
 src_dir = Path(__file__).parent
-
-class WWWData:
-    def __init__(self, path, base=''):
-        self.path = Path(path)
-        self.path.resolve(strict=True)
-        self.base = Path(base)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser("Simple python server")
@@ -36,7 +31,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     www = []
     for w in args.www:
-        www += [WWWData(*w.split(':'))]
+        www += [WebDir(*(Path(p) for p in w.split(':')))]
     args.www = www
     del www
     if args.cert is not None:
@@ -65,7 +60,7 @@ if __name__ == '__main__':
             httpd = ThreadedHTTPServer(('', args.http_port), HTTPSRedirectHandler(args.https_port))
             th_redir = threading.Thread(target=httpd.serve_forever)
             th_redir.start()
-        httpsd = ThreadedHTTPServer(('', args.https_port), RequestHandler(args.www, args.cfg, args.buf_size, args.debug))
+        httpsd = ThreadedHTTPServer(('', args.https_port), RequestHandler(WebCFG(args.cfg, args.www), args.buf_size, args.debug))
         httpsd.socket = ssl.wrap_socket(httpsd.socket, certfile=args.cert/'cert.pem', keyfile=args.cert/'key.pem',
                                         server_side=True)
         try:
@@ -75,5 +70,5 @@ if __name__ == '__main__':
                 httpd.shutdown()
     else:
         print('starting http')
-        httpd = ThreadedHTTPServer(('', args.http_port), RequestHandler(args.www, args.cfg, args.buf_size, args.debug))
+        httpd = ThreadedHTTPServer(('', args.http_port), RequestHandler(WebCFG(args.cfg, args.www), args.buf_size, args.debug))
         httpd.serve_forever()
