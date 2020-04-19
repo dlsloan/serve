@@ -1,7 +1,6 @@
 #!/usr/bin/python3
 
-#todo serve from multiple folders, double extension squashing (separate mime type from execution is index.html.py -> index.html generated from python)
-#     allow get requests on extension squashed files
+#todo serve from multiple folders
 #     -change all executables to be extension sqhashed?
 #     -add basic credential manager
 
@@ -58,7 +57,7 @@ class LRUDict(dict):
             for k in self:
                 return k
 
-scr_dir = Path(__file__).parent
+src_dir = Path(__file__).parent
 path_cache = LRUDict(timeout=60)
 
 class WWWData:
@@ -72,7 +71,7 @@ if __name__ == '__main__':
     parser.add_argument('--debug', '-g', action='store_true')
     parser.add_argument('--buf_size', type=int, default=1024*1024)
     parser.add_argument('--cert', default=None)
-    parser.add_argument('--cfg', default=str(scr_dir / 'default_cfg.json'))
+    parser.add_argument('--cfg', default=str(src_dir / 'default_cfg.json'))
     parser.add_argument('--http_port', type=int, default=80)
     parser.add_argument('--https_port', type=int, default=443)
     parser.add_argument('--no_redirect', action='store_true')
@@ -235,7 +234,6 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.run_resp(404)
             return None, None
         while '.' in ftype[1:]:
-            print(ftype)
             if ftype in cfg['file_types']:
                 break
             ftype = ftype[ftype[1:].index('.')+1:]
@@ -263,31 +261,43 @@ class RequestHandler(BaseHTTPRequestHandler):
         if post_vars is None:
             post_vars = {}
         cookies = SimpleCookie(self.headers.get('Cookie'))
+        env = {}
         for k in cookies:
-            name = escape(k)
-            val = escape(cookies[k].value)
-            exec_input += b'COOKIE:"' + name + b'"="' + val + b'"\n'
-        for k in post_vars:
-            name = escape(k.decode())
-            for i in post_vars[k]:
-                val = escape(i.decode())
-                exec_input += b'POST:"' + name + b'"="' + val + b'"\n'
-        for k in self.url_get:
-            name = escape(k)
-            for i in self.url_get[k]:
-                val = escape(i)
-                exec_input += b'GET:"' + name + b'"="' + val + b'"\n'
+            if k.isidentifier():
+                continue
+            env['COOKIE_' + k] = cookies[k].value
+        cmd_args = {}
+        if post_vars is None:
+            for k in self.url_get:
+                if not k.decode().isidentifier():
+                    continue
+                k = k.decode().replace('_', '-')
+                cmd_args[k] = [val.decode() for val in self.url_get[k] if val != b'']
+        else:
+            for k in post_vars:
+                if not k.decode().isidentifier():
+                    continue
+                n = '--' + k.decode().replace('_', '-')
+                cmd_args[n] = [val.decode() for val in post_vars[k] if val != b'']
         try:
-            val = sp.run([path], input=exec_input, check=True, stdout=sp.PIPE, stderr=sp.PIPE, timeout=10)
+            cmd = [src_dir / 'run.sh', path]
+            for k in cmd_args:
+                cmd += [k] + cmd_args[k]
+            val = sp.run(cmd, env=env, check=True, stdout=sp.PIPE, stderr=sp.PIPE, timeout=10)
+            dmp = val.stderr.decode().split('\0')
+            env_parts = dmp[len(dmp) - dmp[::-1].index('----------ENV----------\n'):]
             cookies = []
             headers = []
-            for line in val.stderr.decode().split('\n'):
-                line = line.strip()
-                if line.startswith('COOKIE:'):
-                    c = line[line.index(':')+1:].strip()
-                    for k in c:
-                        cookies += [c]
-                elif line.startswith("Cache-Control:"):
+            for e in env_parts:
+                if '=' not in e:
+                    continue
+                name = e[:e.index('=')]
+                value = e[len(name)+1:]
+                if name.startswith('COOKIE_'):
+                    name = name[7:]
+                    cookies += [f"{name}={value}"]
+                elif name == 'CACHE_CONTROL':
+                    headers += [f"Cache-Control: {value}"]
                     parts = line.split(':')
                     headers += [[parts[0].strip(), parts[1].strip()]]
             self.run_resp(200, val.stdout, mime, cookies=cookies, headers=headers)
@@ -337,6 +347,8 @@ if __name__ == '__main__':
         exit(0)
     if args.cert is not None:
         print('starting https')
+        th_redir = None
+        httpd = None
         if not args.no_redirect:
             httpd = ThreadedHTTPServer(('', args.http_port), RedirectHandler)
             th_redir = threading.Thread(target=httpd.serve_forever)
@@ -344,7 +356,11 @@ if __name__ == '__main__':
         httpsd = ThreadedHTTPServer(('', args.https_port), RequestHandler)
         httpsd.socket = ssl.wrap_socket(httpsd.socket, certfile=args.cert/'cert.pem', keyfile=args.cert/'key.pem',
                                         server_side=True)
-        httpsd.serve_forever()
+        try:
+            httpsd.serve_forever()
+        finally:
+            if httpd:
+                httpd.shutdown()
     else:
         print('starting http')
         httpd = ThreadedHTTPServer(('', args.http_port), RequestHandler)
