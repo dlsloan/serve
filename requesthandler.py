@@ -28,58 +28,6 @@ class _RequestHandler(BaseHTTPRequestHandler):
         self.debug = debug
         super().__init__(*pargs, **kwargs)
 
-    def send_data(self, code=200, data=None, length=None, resource=None, cookies=None, headers=None):
-        if isinstance(data, str):
-            data = data.encode()
-        self.send_response(code)
-        if resource is not None:
-            self.send_header('Content-Type', resource.mime)
-        if cookies is not None:
-            for c in cookies:
-                self.send_header('Set-Cookie', c)
-        if headers is not None:
-            for h in headers:
-                self.send_header(*h)
-        if length is None and data is not None:
-            length = len(data)
-        if length is not None:
-            self.send_header('Content-Length', length)
-        self.end_headers()
-        if isinstance(data, (bytes, bytearray)):
-            self.send_header('Content-Length', len(data))
-            self.wfile.write(data)
-        elif data is not None:
-            self.send_header('Content-Length', length)
-            val = data.read(self.buf_size)
-            while val is not None and len(val) > 0:
-                self.wfile.write(val)
-                val = data.read(self.buf_size)
-
-    def lookup_resource(self, url_path:Path):
-        ret = path_cache[str(url_path)]
-        if ret is not None:
-            return ret
-        fpath = self.webcfg.find_file(url_path)
-        if fpath is None:
-            return None
-        ret = WebResource(url_path, fpath, self.webcfg)
-        path_cache[str(url_path)] = ret
-        return ret
-
-    def run_head(self, post=False):
-        self.env = {}
-        web_path = self.parse_url()
-        resource = self.lookup_resource(web_path)
-        if resource is None:
-            self.send_data(404)
-            return None
-        if post:
-            self.parse_POST()
-        else:
-            self.post_params = None
-        self.parse_cookies()
-        return resource
-
     def do_HEAD(self):
         resource = self.run_head()
         if resource is None:
@@ -132,6 +80,58 @@ class _RequestHandler(BaseHTTPRequestHandler):
             if k.isidentifier():
                 continue
             self.env['COOKIE_' + k] = cookies[k].value
+
+    def send_data(self, code=200, data=None, length=None, resource=None, cookies=None, headers=None):
+        if isinstance(data, str):
+            data = data.encode()
+        self.send_response(code)
+        if resource is not None:
+            self.send_header('Content-Type', resource.mime)
+        if cookies is not None:
+            for c in cookies:
+                self.send_header('Set-Cookie', c)
+        if headers is not None:
+            for h in headers:
+                self.send_header(*h)
+        if length is None and data is not None:
+            length = len(data)
+        if length is not None:
+            self.send_header('Content-Length', length)
+        self.end_headers()
+        if isinstance(data, (bytes, bytearray)):
+            self.send_header('Content-Length', len(data))
+            self.wfile.write(data)
+        elif data is not None:
+            self.send_header('Content-Length', length)
+            val = data.read(self.buf_size)
+            while val is not None and len(val) > 0:
+                self.wfile.write(val)
+                val = data.read(self.buf_size)
+
+    def lookup_resource(self, url_path:Path):
+        ret = path_cache[str(url_path)]
+        if ret is not None:
+            return ret
+        fpath = self.webcfg.find_file(url_path)
+        if fpath is None:
+            return None
+        ret = WebResource(url_path, fpath, self.webcfg)
+        path_cache[str(url_path)] = ret
+        return ret
+
+    def run_head(self, post=False):
+        self.env = {'HTTP_METHOD': ('POST' if post else 'GET')}
+        web_path = self.parse_url()
+        resource = self.lookup_resource(web_path)
+        if resource is None:
+            self.send_data(404)
+            return None
+        if post:
+            self.parse_POST()
+        else:
+            self.post_params = None
+        self.parse_cookies()
+        return resource
 
     def do_file(self, resource):
         try:
